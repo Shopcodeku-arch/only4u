@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function signed() { return request.auth != null; }
+    function isAdmin() { return signed() && exists(/databases/$(db)/documents/admins/$(request.auth.uid)); }
+
+    // Daftar admin: hanya akun admin@only4u.app yang boleh mendaftarkan dirinya sendiri (sekali, lewat setup-admin.html)
+    match /admins/{id} {
+      allow read: if signed() && request.auth.uid == id;
+      allow create: if signed() && request.auth.uid == id
+        && request.auth.token.email == 'admin@only4u.app'
+        && request.resource.data.keys().hasOnly(['role']);
+      allow update, delete: if false;
+    }
+
+    // Profil akun pelanggan
+    match /users/{uid} {
+      allow read: if signed() && (request.auth.uid == uid || isAdmin());
+      allow create: if signed() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['username', 'createdAt']);
+      allow update, delete: if false;
+    }
+
+    // Order
+    match /orders/{oid} {
+      allow read: if signed() && (resource.data.u == request.auth.uid || isAdmin());
+
+      allow create: if signed()
+        && request.resource.data.u == request.auth.uid
+        && request.resource.data.id == oid
+        && request.resource.data.st == 'p'
+        && request.resource.data.total is number
+        && request.resource.data.keys().hasOnly(['u','un','id','k','item','acc','total','t','exp','st']);
+
+      allow update: if isAdmin()
+        || (signed() && resource.data.u == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['st','paid','rx'])
+          && request.resource.data.get('rx', '') in ['', 'up', 'love']
+          && (request.resource.data.st == resource.data.st
+              || (resource.data.st == 'p' && request.resource.data.st in ['v','e'])));
+
+      allow delete: if false;
+    }
+  }
+}

@@ -1,0 +1,200 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function signed() { return request.auth != null; }
+    function isAdmin() { return signed() && exists(/databases/$(db)/documents/admins/$(request.auth.uid)); }
+
+    // Daftar admin: hanya akun admin@only4u.app yang boleh mendaftarkan dirinya sendiri (sekali, lewat setup-admin.html)
+    match /admins/{id} {
+      allow read: if signed() && request.auth.uid == id;
+      allow create: if signed() && request.auth.uid == id
+        && request.auth.token.email == 'admin@only4u.app'
+        && request.resource.data.keys().hasOnly(['role']);
+      allow update, delete: if false;
+    }
+
+    // Profil akun pelanggan
+    match /users/{uid} {
+      allow read: if signed() && (request.auth.uid == uid || isAdmin());
+      allow create: if signed() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['username', 'createdAt', 'ref'])
+        && (!('ref' in request.resource.data)
+            || (exists(/databases/$(db)/documents/refs/$(request.resource.data.ref))
+                && get(/databases/$(db)/documents/refs/$(request.resource.data.ref)).data.u != request.auth.uid));
+      allow update, delete: if false;
+    }
+
+    // Order
+    match /orders/{oid} {
+      allow read: if signed() && (resource.data.u == request.auth.uid || isAdmin());
+
+      allow create: if signed()
+        && request.resource.data.u == request.auth.uid
+        && request.resource.data.id == oid
+        && request.resource.data.st == 'p'
+        && request.resource.data.total is number
+        && request.resource.data.keys().hasOnly(['u','un','id','k','item','acc','total','t','exp','st','q','fid','pid','bd'])
+        && request.resource.data.get('q', 1) is number && request.resource.data.get('bd', '').size() <= 400;
+
+      allow update: if isAdmin()
+        || (signed() && resource.data.u == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['st','paid','rx'])
+          && request.resource.data.get('rx', '') in ['', 'up', 'love']
+          && (request.resource.data.st == resource.data.st
+              || (resource.data.st == 'p' && request.resource.data.st in ['e','c'])
+              || (resource.data.st == 'p' && request.resource.data.st == 'v'
+                  && existsAfter(/databases/$(db)/documents/proofs/$(oid)))));
+
+      allow delete: if false;
+    }
+
+    // Live chat
+    match /chats/{cid} {
+      allow read: if signed() && (resource.data.u == request.auth.uid || isAdmin());
+      allow create: if signed() && request.resource.data.u == request.auth.uid
+        && request.resource.data.st == 'open'
+        && request.resource.data.keys().hasOnly(['u','un','st','t','at','ls']);
+      allow update: if isAdmin()
+        || (signed() && resource.data.u == request.auth.uid && resource.data.st == 'open'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['at','ls'])
+            && request.resource.data.ls == 'u')
+        // Penutupan otomatis oleh pemilik chat: hanya jika admin/bot terakhir yang menulis dan sudah lewat 5 menit
+        || (signed() && resource.data.u == request.auth.uid && resource.data.st == 'open'
+            && resource.data.ls != 'u'
+            && request.time.toMillis() - resource.data.at >= 300000
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['st','at','ls','cr'])
+            && request.resource.data.st == 'closed' && request.resource.data.cr == 'timeout');
+      allow delete: if false;
+
+      match /msgs/{mid} {
+        allow read: if signed() && (get(/databases/$(db)/documents/chats/$(cid)).data.u == request.auth.uid || isAdmin());
+        allow create: if signed()
+          && request.resource.data.keys().hasOnly(['s','x','t'])
+          && request.resource.data.x is string
+          && request.resource.data.x.size() > 0 && request.resource.data.x.size() <= 500
+          && ((isAdmin() && request.resource.data.s in ['a','b'])
+              || (request.resource.data.s == 'u'
+                  && get(/databases/$(db)/documents/chats/$(cid)).data.u == request.auth.uid
+                  && get(/databases/$(db)/documents/chats/$(cid)).data.st == 'open')
+              // Pesan sambutan otomatis: hanya satu per chat (id "greet"), teksnya harus persis seperti ini
+              || (request.resource.data.s == 'b' && mid == 'greet'
+                  && getAfter(/databases/$(db)/documents/chats/$(cid)).data.u == request.auth.uid
+                  && request.resource.data.x == 'Halo kak ' + getAfter(/databases/$(db)/documents/chats/$(cid)).data.un + ', selamat datang di live chat bantuan, ada yang bisa kami bantu?')
+              || (request.resource.data.s == 'b' && mid == 'timeout'
+                  && get(/databases/$(db)/documents/chats/$(cid)).data.u == request.auth.uid
+                  && get(/databases/$(db)/documents/chats/$(cid)).data.st == 'open'
+                  && get(/databases/$(db)/documents/chats/$(cid)).data.ls != 'u'
+                  && request.time.toMillis() - get(/databases/$(db)/documents/chats/$(cid)).data.at >= 300000
+                  && request.resource.data.x == 'Percakapan ditutup otomatis karena tidak ada respons selama 5 menit. Silakan mulai live chat baru jika masih butuh bantuan.'));
+        allow update, delete: if false;
+      }
+    }
+
+    // Antrian live chat (hanya waktu & uid, untuk menghitung posisi)
+    match /queue/{id} {
+      allow read: if signed();
+      allow create: if signed() && request.resource.data.u == request.auth.uid
+        && request.resource.data.keys().hasOnly(['u','t']);
+      allow update: if false;
+      allow delete: if isAdmin() || (signed() && resource.data.u == request.auth.uid);
+    }
+
+    // Kode referral: satu kode per pemain, bisa dibaca semua pengguna login untuk validasi
+    match /refs/{code} {
+      allow read: if signed();
+      allow create: if signed() && request.resource.data.u == request.auth.uid
+        && request.resource.data.keys().hasOnly(['u','t'])
+        && code.matches('[A-Z0-9]{8}');
+      allow update, delete: if false;
+
+      // Daftar pemain yang bergabung lewat kode ini (dicatat saat daftar, bersama dokumen akun)
+      match /joins/{uid} {
+        allow read: if signed() && (get(/databases/$(db)/documents/refs/$(code)).data.u == request.auth.uid || isAdmin());
+        allow create: if signed() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['un','t'])
+          && getAfter(/databases/$(db)/documents/users/$(uid)).data.ref == code
+          && request.resource.data.un == getAfter(/databases/$(db)/documents/users/$(uid)).data.username;
+        allow update, delete: if false;
+      }
+    }
+
+    // Produk tambahan yang diatur admin dari panel (tanpa coding)
+    match /products/{pid} {
+      allow read: if signed();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['k','n','p','c','i','t','o','s','off'])
+        && request.resource.data.n is string && request.resource.data.n.size() > 0 && request.resource.data.n.size() <= 60
+        && request.resource.data.p is number && request.resource.data.p > 0
+        && request.resource.data.get('o', 0) is number && request.resource.data.get('o', 0) >= 0
+        && request.resource.data.get('s', -1) is number;
+      allow delete: if isAdmin();
+    }
+
+    // Gambar profil & banner game, diatur admin dari panel
+    match /gimg/{k} {
+      allow read: if signed();
+      allow write: if isAdmin()
+        && request.resource.data.keys().hasOnly(['p','b'])
+        && request.resource.data.p is string && request.resource.data.b is string
+        && request.resource.data.p.size() <= 600 && request.resource.data.b.size() <= 600;
+    }
+
+    // Flash sale yang diatur admin (waktu, produk, harga, stok)
+    match /flash/{fid} {
+      allow read: if signed();
+      allow write: if isAdmin()
+        && request.resource.data.keys().hasOnly(['k','n','p','s','a','b','on','t'])
+        && request.resource.data.p is number && request.resource.data.p > 0
+        && request.resource.data.s is number && request.resource.data.s >= 0
+        && request.resource.data.a is number && request.resource.data.b is number;
+    }
+
+    // Bukti transfer: dikirim pelanggan sebelum status order jadi "menunggu verifikasi"
+    match /proofs/{oid} {
+      allow read: if signed() && (resource.data.u == request.auth.uid || isAdmin());
+      allow create: if signed() && request.resource.data.u == request.auth.uid
+        && request.resource.data.keys().hasOnly(['u','d','t'])
+        && request.resource.data.d is string && request.resource.data.d.size() <= 900000
+        && request.resource.data.d[0:11] == 'data:image/'
+        && get(/databases/$(db)/documents/orders/$(oid)).data.u == request.auth.uid
+        && get(/databases/$(db)/documents/orders/$(oid)).data.st == 'p';
+      allow update, delete: if false;
+    }
+
+    // Profil website (logo, nama, link WhatsApp, deskripsi footer): bisa dibaca semua, diubah admin
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if isAdmin() && id == 'site'
+        && request.resource.data.keys().hasOnly(['n','l','w','d'])
+        && request.resource.data.n is string && request.resource.data.n.size() <= 30
+        && request.resource.data.l is string && request.resource.data.l.size() <= 600
+        && request.resource.data.w is string && request.resource.data.w.size() <= 400
+        && request.resource.data.d is string && request.resource.data.d.size() <= 300;
+    }
+
+    // Berita / artikel yang ditulis admin
+    match /articles/{id} {
+      allow read: if signed();
+      allow write: if isAdmin()
+        && request.resource.data.keys().hasOnly(['t','c','i','k','d','on'])
+        && request.resource.data.t is string && request.resource.data.t.size() <= 150
+        && request.resource.data.c is string && request.resource.data.c.size() <= 20000;
+    }
+
+    // Game (nama, satuan, kategori/tab, game baru) yang diatur admin
+    match /games/{id} {
+      allow read: if signed();
+      allow write: if isAdmin()
+        && request.resource.data.keys().hasOnly(['n','cur','ic','f','td','on','nw','t'])
+        && request.resource.data.get('td', []).size() <= 30;
+    }
+
+    // Perubahan produk bawaan website (harga, stok, kategori, urutan, sembunyikan)
+    match /pov/{id} {
+      allow read: if signed();
+      allow write: if isAdmin()
+        && request.resource.data.keys().hasOnly(['k','n','p','s','c','o','off']);
+    }
+  }
+}

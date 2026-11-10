@@ -1,0 +1,8 @@
+node_modules/
+.vercel/
+.env
+.env.*
+*.log
+# JANGAN PERNAH commit kunci service account Firebase
+*service-account*.json
+*firebase-adminsdk*.json

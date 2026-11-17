@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin/
+Disallow: /dashboard
+Disallow: /penjual
+Disallow: /riwayat
+Disallow: /inbox
+Disallow: /invite/
+
+Sitemap: https://only4u.my.id/sitemap.xml

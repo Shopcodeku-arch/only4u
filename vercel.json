@@ -1,0 +1,9 @@
+{
+  "cleanUrls": false,
+  "rewrites": [{ "source": "/((?!api/|favicon/|robots\\.txt|sitemap\\.xml).*)", "destination": "/index.html" }],
+  "headers": [
+    { "source": "/favicon/(.*)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400" }] },
+    { "source": "/(robots\\.txt|sitemap\\.xml)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=3600" }] },
+    { "source": "/(.*)", "headers": [{ "key": "X-Content-Type-Options", "value": "nosniff" }, { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }] }
+  ]
+}
